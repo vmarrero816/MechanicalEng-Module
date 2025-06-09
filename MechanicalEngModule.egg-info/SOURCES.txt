@@ -1,0 +1,10 @@
+LICENSE
+README.md
+setup.py
+MechanicalEngModule/MechanicalEngModuleFunctions.py
+MechanicalEngModule/__init__.py
+MechanicalEngModule.egg-info/PKG-INFO
+MechanicalEngModule.egg-info/SOURCES.txt
+MechanicalEngModule.egg-info/dependency_links.txt
+MechanicalEngModule.egg-info/requires.txt
+MechanicalEngModule.egg-info/top_level.txt
