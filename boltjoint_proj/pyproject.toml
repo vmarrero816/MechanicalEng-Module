@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boltjoint"
+version = "1.0.0"
+description = "Preloaded bolted joint analysis per NASA TM-106943"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+notebook = ["numpy", "pandas", "matplotlib", "jupyter"]
+gui = ["streamlit", "numpy", "pandas", "matplotlib"]
+test = ["pytest"]
