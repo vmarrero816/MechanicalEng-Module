@@ -4,7 +4,7 @@ import math
 
 import pytest
 
-from boltjoint import (
+from MechanicalEngModule import (
     Fastener, Joint, Layer, JointAnalysis, LoadCase, InsertSpec,
     materials, margins as M, preload_from_yield_fraction, preload_from_torque,
 )
@@ -259,7 +259,7 @@ def test_report_renders():
 # ---------------------------------------------------------------------------
 # Layer-by-layer stiffness and thermal
 # ---------------------------------------------------------------------------
-from boltjoint import (  # noqa: E402
+from MechanicalEngModule import (  # noqa: E402
     ThermalEnvironment, run_thermal_envelope, thermal, frustum_stiffness,
     preload_target,
 )
