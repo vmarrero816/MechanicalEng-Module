@@ -1,55 +1,95 @@
-# boltjoint
+# MechanicalEngModule
 
 Preloaded bolted joint analysis per NASA TM-106943 (Chambers) and the
-*Guideline for Bolted Joint Design and Analysis* v1.0.
+*Guideline for Bolted Joint Design and Analysis* v1.0, with random and sine
+vibration loads for the no-FEM case.
 
 Replaces the bolted-joint sections of `MachanicalEngineeringNotebookRevB.ipynb`.
-All physics lives in the package; the notebook is a thin front end, so the same
-code can drive a GUI later without duplication.
+
+## One source, two front ends
+
+All physics, and the step that builds a model from the inputs, live in the
+package. The notebook and the GUI only collect inputs and show results, so a
+fix or a new check is made once, in a `.py` file, and both pick it up.
+
+```
+MechanicalEngModule/        <- the only place calculations live
+   ^                ^
+Notebooks/...ipynb  app.py   <- inputs + display only
+   \                /
+    case.json (optional: the same case saved and loaded by both)
+```
+
+## Setup (once per computer)
+
+```bash
+git clone https://github.com/vmarrero816/MechanicalEng-Module.git
+cd MechanicalEng-Module
+pip install -e ".[gui,notebook,test]"
+```
+
+`-e` (editable) installs a link to this folder rather than a copy, so the
+notebook and the GUI always run the code in your clone. There is nothing to
+reinstall after editing a file or pulling changes.
+
+## Daily use
+
+| Task | Command |
+| --- | --- |
+| Get the latest code | `git pull` (in the repo folder) |
+| Notebook | open `MechanicalEngModule/Notebooks/BoltedJointAnalysis_RevC.ipynb` |
+| GUI | `streamlit run MechanicalEngModule/app.py` (in a terminal, not VS Code's Run button) |
+| Tests | `python -m pytest MechanicalEngModule -q` |
+
+After editing a package file, restart the notebook kernel; Streamlit reloads
+on its own.
+
+To move a case between the two:
+
+```python
+case.to_json("my_case.json")                 # notebook: save
+case = JointCase.from_json("my_case.json")   # notebook: load
+```
+
+In the GUI, use **Save case** / **Load case** at the top of the sidebar.
+
+## Use from Python
+
+```python
+from MechanicalEngModule import JointCase
+
+case = JointCase(thread="10-32", configuration=1, P_et=150.0, V=60.0)
+model = case.build()                 # fastener, joint, preload, load case, ...
+envelope = model.envelope()          # ambient / hot / cold
+print(envelope.report())
+envelope.envelope()                  # worst margin per mode, driving case named
+model.sweep_load("P_et", range(0, 400, 20))
+```
+
+The lower-level objects (`Fastener`, `Joint`, `Preload`, `JointAnalysis`,
+`run_thermal_envelope`, ...) remain available for anything `JointCase` does not
+cover.
 
 ## Layout
 
 ```
-boltjoint/
+MechanicalEngModule/
   fasteners.py   unified thread table, tensile stress area, thread shear areas
   materials.py   allowables, Fsu/Fsy derivation, material library
-  joint.py       grip length, kb, kj, loading plane factor n, thermal load
+  joint.py       grip length, kb, kj, loading plane factor n
+  thermal.py     Shigley frustum stack, layer-by-layer thermal load, environment
   preload.py     nut factors, uncertainty, Po_max / Po_min / relaxation
   margins.py     every failure mode, both strength bases
-  analysis.py    orchestrator -> report + DataFrame
-tests/           26 regression tests, each pinning a Rev B defect
-notebooks/       BoltedJointAnalysis_RevC.ipynb
-app.py           Streamlit front end
+  analysis.py    JointAnalysis, LoadCase, hot/cold envelope
+  case.py        JointCase (saveable inputs) -> JointModel (build, runs, sweeps)
+  vibe.py        random/sine vibe -> interface loads -> per-bolt loads, slip, fatigue
+  app.py         Streamlit GUI
+  Notebooks/     BoltedJointAnalysis_RevC.ipynb, RevB (superseded), figures
+  test_*.py      regression tests
 ```
 
-Two front ends, one set of physics. The notebook is for exploratory and
-documented work; the app is for quick trades and design reviews.
-
-```bash
-pip install -e ".[gui]"
-streamlit run app.py
-```
-
-Units are inches, lbf, psi, degF throughout.
-
-## Use
-
-```python
-from boltjoint import *
-
-f     = Fastener("2-56")
-bolt  = materials.get("A286")
-al    = materials.get("AL6061-T6")
-
-joint = Joint(f, [Layer(0.060, al), Layer(0.129, al)], bolt,
-              configuration=3, insert_length=0.129)
-p     = preload_target(81.0, f, K=0.20, u=0.35, relax=0.05)
-
-a = JointAnalysis(f, bolt, joint, p,
-                  LoadCase(P_et=4.0, V=2.0, delta_T=-81.0, SF_tension=1.4))
-print(a.report())
-a.to_dataframe()
-```
+Units: in, lbf, lbf-in, psi. Temperatures are entered in degC; temperature
+changes are carried internally in degF.
 
 ## Design rules enforced
 
@@ -68,7 +108,21 @@ a.to_dataframe()
 
 Bolt tension, bolt shear, combined tension/shear/bending, joint separation,
 bolt external thread shear, the three threaded-insert pull-out modes, sheet
-shear tear-out, bolt bearing, and head/washer bearing.
+shear tear-out, bolt bearing, and head/washer bearing. `vibe.py` adds joint
+slip (NASA-STD-5020 A.10-6) and random-vibration fatigue.
+
+## Thermal
+
+Member stiffness can be built layer by layer from Shigley stress cones
+(`stiffness_method="frustum"`, Guideline sec. 5.2) instead of one closed-form
+expression with an equivalent modulus. The thermal load follows Guideline
+sec. 7:
+
+    P_th = dT * (sum(alpha_i * l_i) - alpha_b * L) / (1/k_b + 1/k_j)
+
+Both operational extremes are run, because one temperature cannot drive both
+checks: a tensile thermal load adds to maximum preload for bolt strength, and a
+preload-relieving load subtracts from minimum preload for separation.
 
 ## Corrections relative to Rev B
 
@@ -88,12 +142,8 @@ shear tear-out, bolt bearing, and head/washer bearing.
 | 12 | Separation SF = 1.25 with the wrong `P_sep` | 1.2 / 1.4 with `P_sep = (1-n*phi)*P_et` |
 | 13 | Insert modes reused the bolt minor diameter and `Le` | correct mating geometry per mode |
 | 14 | Configurations 2 and 4 raised `IndexError` / `KeyError` | fixed and guarded |
-
-## Verification
-
-```bash
-python -m pytest tests -q
-```
+| 15 | Single equivalent-modulus member stiffness | Shigley frustum stack, layer by layer (optional) |
+| 16 | One temperature case | hot / cold / ambient envelope, worst margin per mode |
 
 ## Before releasing an analysis
 
