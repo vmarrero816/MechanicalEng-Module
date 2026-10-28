@@ -195,7 +195,7 @@ def joint_10_32():
     al = materials.get("AL6061-T6")
     j = Joint(f, [Layer(0.125, al), Layer(0.250, al)], bolt,
               configuration=3, insert_length=0.250)
-    p = preload_from_yield_fraction(f, bolt, 0.65, K=0.20, u=0.35)
+    p = preload_from_yield_fraction(f, bolt, 0.65, K=0.30, u=0.35)
     return f, bolt, j, p
 
 

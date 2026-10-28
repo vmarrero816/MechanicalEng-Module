@@ -10,15 +10,19 @@ from dataclasses import dataclass
 from .fasteners import Fastener
 from .materials import Material
 
-# Nut factor K (TM-106943 / 540-PG-8072.1.2).  Verify against the applicable
-# lubrication and locking-feature callout.
+# Nut factor K, GSFC 540-PG-8072.1.2B (Mechanical Fastener Torque Guidelines),
+# Table 3-1.  Use fastener-specific torque-tension data when it exists.
+#   dry        : 0.30, fasteners ultrasonically cleaned in IPA.  Residual
+#                machining oil lowers K and raises preload; at 65% Fty this K
+#                can strip some small-diameter heads (sec. 3 notes).
+#   lubricated : 0.18, wet-lubricated threads (sec. 1.5.3 lubricants).
+#   arathane   : 0.22, Arathane 5753 as locking compound (sec. 1.5.4.2).
 NUT_FACTOR: dict[str, float] = {
-    "dry": 0.20,
-    "lubricated": 0.15,
-    "cadmium plated": 0.16,
-    "arathane": 0.18,
-    "solid film lube": 0.12,
+    "dry": 0.30,
+    "lubricated": 0.18,
+    "arathane": 0.22,
 }
+K_DEFAULT = NUT_FACTOR["dry"]
 
 # Preload uncertainty u (TM-106943 table 2).
 UNCERTAINTY: dict[str, float] = {
@@ -96,7 +100,7 @@ def preload_from_torque(T: float, K: float, d_major: float,
 
 
 def preload_from_yield_fraction(fastener: Fastener, material: Material,
-                                fraction: float = 0.65, K: float = 0.20,
+                                fraction: float = 0.65, K: float = K_DEFAULT,
                                 u: float = 0.35, relax: float = 0.05) -> Preload:
     """Preload as a fraction of bolt tensile yield.  Po = f*Fty*At.
 
@@ -107,7 +111,7 @@ def preload_from_yield_fraction(fastener: Fastener, material: Material,
     return Preload(Po=Po, u=u, relax=relax, K=K, d_major=fastener.d_major)
 
 
-def preload_target(Po: float, fastener: Fastener, K: float = 0.20,
+def preload_target(Po: float, fastener: Fastener, K: float = K_DEFAULT,
                    u: float = 0.35, relax: float = 0.05) -> Preload:
     """Preload from a directly specified target force, lbf."""
     return Preload(Po=Po, u=u, relax=relax, K=K, d_major=fastener.d_major)

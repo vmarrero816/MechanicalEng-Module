@@ -78,7 +78,7 @@ MechanicalEngModule/
   materials.py   allowables, Fsu/Fsy derivation, material library
   joint.py       grip length, kb, kj, loading plane factor n
   thermal.py     Shigley frustum stack, layer-by-layer thermal load, environment
-  preload.py     nut factors, uncertainty, Po_max / Po_min / relaxation
+  preload.py     GSFC 540-PG nut factors, uncertainty, Po_max / Po_min / relaxation
   margins.py     every failure mode, both strength bases
   analysis.py    JointAnalysis, LoadCase, hot/cold envelope
   case.py        JointCase (saveable inputs) -> JointModel (build, runs, sweeps)

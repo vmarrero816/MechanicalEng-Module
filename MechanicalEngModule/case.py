@@ -131,6 +131,9 @@ class JointCase:
             raise ValueError(f"preload_method must be one of {PRELOAD_METHODS}")
         if self.configuration not in (1, 2, 3, 4):
             raise ValueError("configuration must be 1, 2, 3 or 4")
+        if self.install not in NUT_FACTOR:
+            raise ValueError(f"install {self.install!r} has no GSFC 540-PG nut factor; "
+                             f"use one of {sorted(NUT_FACTOR)}")
 
         fastener = Fastener(self.thread, head_style=self.head_style,
                             shank_dia=self.shank_dia)

@@ -129,3 +129,17 @@ def test_warnings():
     assert any("below the equal-strength" in w for w in short.warnings())
     edge = JointCase(edge_distance=0.1).build()
     assert any("e/D" in w for w in edge.warnings())
+
+
+def test_nut_factors_are_gsfc_540_pg():
+    """GSFC 540-PG-8072.1.2B Table 3-1: dry 0.30, lubricated 0.18, Arathane 0.22."""
+    from MechanicalEngModule import K_DEFAULT
+    assert NUT_FACTOR == {"dry": 0.30, "lubricated": 0.18, "arathane": 0.22}
+    assert K_DEFAULT == 0.30
+    f = Fastener("2-56")
+    assert preload_target(81.0, f).K == 0.30
+
+
+def test_non_gsfc_install_rejected():
+    with pytest.raises(ValueError, match="GSFC 540-PG"):
+        JointCase(install="cadmium plated").build()
