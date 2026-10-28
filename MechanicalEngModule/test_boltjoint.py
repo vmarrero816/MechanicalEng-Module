@@ -4,7 +4,7 @@ import math
 
 import pytest
 
-from boltjoint import (
+from MechanicalEngModule import (
     Fastener, Joint, Layer, JointAnalysis, LoadCase, InsertSpec,
     materials, margins as M, preload_from_yield_fraction, preload_from_torque,
 )
@@ -63,7 +63,7 @@ def test_sf_not_applied_to_preload():
     al = materials.get("AL6061-T6")
     j = Joint(f, [Layer(0.060, al), Layer(0.129, al)], bolt,
               configuration=3, insert_length=0.129)
-    p = preload_from_yield_fraction(f, bolt, 0.65, K=0.20, u=0.35)
+    p = preload_from_yield_fraction(f, bolt, 0.65, K=0.30, u=0.35)
     pb1 = M.bolt_axial_load(p, j, 10.0, SF=1.0)
     pb2 = M.bolt_axial_load(p, j, 10.0, SF=2.0)
     assert pb2 - pb1 == pytest.approx(j.n * j.phi * 10.0)
@@ -228,7 +228,7 @@ def _demo_analysis(**lc_kwargs):
     al = materials.get("AL6061-T6")
     j = Joint(f, [Layer(0.060, al), Layer(0.129, al)], bolt,
               configuration=3, insert_length=0.129)
-    p = preload_from_yield_fraction(f, bolt, 0.65, K=0.20, u=0.35, relax=0.05)
+    p = preload_from_yield_fraction(f, bolt, 0.65, K=0.30, u=0.35, relax=0.05)
     ins = InsertSpec(materials.get("CRES304"), al, 0.1380, 0.129, 0.129)
     return JointAnalysis(f, bolt, j, p, LoadCase(**lc_kwargs), insert=ins)
 
@@ -259,7 +259,7 @@ def test_report_renders():
 # ---------------------------------------------------------------------------
 # Layer-by-layer stiffness and thermal
 # ---------------------------------------------------------------------------
-from boltjoint import (  # noqa: E402
+from MechanicalEngModule import (  # noqa: E402
     ThermalEnvironment, run_thermal_envelope, thermal, frustum_stiffness,
     preload_target,
 )
@@ -391,7 +391,7 @@ def test_environment_converts_celsius_delta():
 
 def _envelope():
     f, bolt, j = _layered_joint()
-    p = preload_target(81.0, f, K=0.20, u=0.35, relax=0.05)
+    p = preload_target(81.0, f, K=0.30, u=0.35, relax=0.05)
     ins = InsertSpec(materials.get("CRES304"), materials.get("AL6061-T6"),
                      0.1380, 0.129, 0.129)
     env = ThermalEnvironment(T_assembly=20.0, T_hot=71.0, T_cold=-25.0)

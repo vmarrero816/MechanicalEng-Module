@@ -206,21 +206,25 @@ class ThermalEnvelope:
     def passes(self) -> bool:
         return all(a.passes for a in self.cases.values())
 
+    def worst(self) -> list[tuple[M.MarginResult, str]]:
+        """Worst result per (mode, basis) across every case, with the case
+        that drives it, lowest margin first."""
+        best: dict[tuple[str, str], tuple[M.MarginResult, str]] = {}
+        for name, a in self.cases.items():
+            for r in a.results:
+                k = (r.mode, r.basis)
+                if k not in best or r.MS < best[k][0].MS:
+                    best[k] = (r, name)
+        return sorted(best.values(), key=lambda rc: rc[0].MS)
+
     def envelope(self):
-        """Worst margin per mode across every temperature case."""
+        """Worst margin per mode across every temperature case (DataFrame)."""
         import pandas as pd
 
-        frames = []
-        for name, a in self.cases.items():
-            df = a.to_dataframe()[["mode", "basis", "MS", "pass"]].copy()
-            df["case"] = name
-            frames.append(df)
-        allc = pd.concat(frames, ignore_index=True)
-        idx = allc.groupby(["mode", "basis"])["MS"].idxmin()
-        out = (allc.loc[idx]
-               .sort_values("MS")
-               .reset_index(drop=True)[["mode", "basis", "case", "MS", "pass"]])
-        return out
+        return pd.DataFrame(
+            [{"mode": r.mode, "basis": r.basis, "case": c, "MS": r.MS,
+              "pass": r.passes} for r, c in self.worst()],
+            columns=["mode", "basis", "case", "MS", "pass"])
 
     def thermal_loads(self):
         import pandas as pd

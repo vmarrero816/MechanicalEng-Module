@@ -1,16 +1,18 @@
 """Bolted joint analysis - interactive front end.
 
-    streamlit run app.py
+    streamlit run MechanicalEngModule/app.py        (from the repo root)
 
-All physics comes from the boltjoint package; this module only collects inputs
-and renders results.  No calculation lives here.
+All physics and the model build come from MechanicalEngModule (see case.py);
+this module only collects inputs and renders results.  No calculation lives
+here, so the notebook and this app always agree.  A case saved here as JSON
+loads in the notebook with ``JointCase.from_json``, and the reverse.
 """
 
 from __future__ import annotations
 
-import io
-import sys
+import hashlib
 import pathlib
+import sys
 
 import matplotlib
 matplotlib.use("Agg")
@@ -19,16 +21,15 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-sys.path.insert(0, str(pathlib.Path(__file__).parent))
+try:
+    import MechanicalEngModule  # noqa: F401  (installed with `pip install -e .`)
+except ModuleNotFoundError:     # not installed: use the repo copy this file sits in
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-from boltjoint import (  # noqa: E402
-    AbutmentSpec, Fastener, InsertSpec, Joint, JointAnalysis, Layer, LoadCase,
-    Preload, materials, margins as M, min_engagement_equal_strength,
-    preload_from_torque, preload_from_yield_fraction, preload_target,
-    ThermalEnvironment, run_thermal_envelope,
-    NUT_FACTOR, UNCERTAINTY,
+from MechanicalEngModule import (  # noqa: E402
+    JointCase, NUT_FACTOR, UNCERTAINTY, materials, margins as M,
 )
-from boltjoint.fasteners import THREADS  # noqa: E402
+from MechanicalEngModule.fasteners import THREADS  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Design tokens
@@ -164,122 +165,190 @@ MAT_KEYS = sorted(materials.LIBRARY)
 # Inputs
 # ---------------------------------------------------------------------------
 sb = st.sidebar
+
+
+def _index(options, value, fallback=0):
+    """Position of ``value`` in ``options`` (for widget defaults)."""
+    options = list(options)
+    return options.index(value) if value in options else fallback
+
+
+# -- case file: a loaded case becomes the default for every widget --------
+sb.markdown("## Case file")
+upload = sb.file_uploader("Load case (.json)", type="json",
+                          help="A case saved from this app or from the notebook "
+                               "with JointCase.to_json().")
+base, token = JointCase(), "default"
+if upload is not None:
+    raw = upload.getvalue()
+    try:
+        base = JointCase.from_json(raw.decode())
+        token = hashlib.md5(raw).hexdigest()[:10]
+    except (ValueError, KeyError, TypeError) as exc:
+        sb.error(f"Cannot read that case file: {exc}")
+
+
+def key(name: str) -> str:
+    """Widget key; changes when a new case file is loaded so widgets reset."""
+    return f"{name}-{token}"
+
+
+case_name = sb.text_input("Case name", base.name, key=key("name"))
+
 sb.markdown("## Fastener")
-thread = sb.selectbox("Thread", sorted(THREADS), index=sorted(THREADS).index("2-56"))
-head_style = sb.selectbox("Head style", ["socket", "flat100"])
-bolt_key = sb.selectbox("Bolt material", MAT_KEYS, index=MAT_KEYS.index("A286"))
-reduced = sb.checkbox("Reduced shank")
+THREAD_KEYS = sorted(THREADS)
+thread = sb.selectbox("Thread", THREAD_KEYS, index=_index(THREAD_KEYS, base.thread),
+                      key=key("thread"))
+head_style = sb.selectbox("Head style", ["socket", "flat100"],
+                          index=_index(["socket", "flat100"], base.head_style),
+                          key=key("head"))
+bolt_key = sb.selectbox("Bolt material", MAT_KEYS,
+                        index=_index(MAT_KEYS, base.bolt_material), key=key("boltmat"))
+reduced = sb.checkbox("Reduced shank", value=base.shank_dia is not None, key=key("reduced"))
 shank_dia = sb.number_input("Shank diameter [in]", 0.01, 1.0,
-                            float(THREADS[thread][0]), format="%.4f") if reduced else None
-shank_shear = sb.checkbox("Shear plane on shank", value=False,
-                          help="Otherwise the threads are in the shear plane and At is used.")
+                            float(base.shank_dia or THREADS[thread][0]), format="%.4f",
+                            key=key("shank")) if reduced else None
+shank_shear = sb.checkbox("Shear plane on shank", value=base.shear_plane_in_shank,
+                          help="Otherwise the threads are in the shear plane and At is used.",
+                          key=key("shankshear"))
 
 sb.markdown("## Joint stack")
-config = sb.selectbox("Configuration", [1, 2, 3, 4], index=2, format_func=lambda c: {
-    1: "1 - through-bolt + nut",
-    2: "2 - through-bolt + nut, flat head",
-    3: "3 - insert / tapped hole",
-    4: "4 - insert / tapped hole, flat head"}[c])
-n_layers = sb.number_input("Number of layers", 2, 5, 2)
+config = sb.selectbox("Configuration", [1, 2, 3, 4],
+                      index=_index([1, 2, 3, 4], base.configuration, 2),
+                      format_func=lambda c: {
+                          1: "1 - through-bolt + nut",
+                          2: "2 - through-bolt + nut, flat head",
+                          3: "3 - insert / tapped hole",
+                          4: "4 - insert / tapped hole, flat head"}[c],
+                      key=key("config"))
+n_layers = sb.number_input("Number of layers", 2, 5, min(max(len(base.layers), 2), 5),
+                           key=key("nlayers"))
 layers_in = []
 for i in range(int(n_layers)):
     last = i == n_layers - 1
     tag = "parent" if (last and config in (3, 4)) else f"layer {i + 1}"
+    t0, m0 = base.layers[i] if i < len(base.layers) else (0.129 if last else 0.060,
+                                                          "AL6061-T6")
     c1, c2 = sb.columns([1, 1.3])
-    t = c1.number_input(f"t {tag} [in]", 0.001, 5.0, 0.129 if last else 0.060,
-                        format="%.4f", key=f"t{i}")
-    m = c2.selectbox(f"mat {tag}", MAT_KEYS, index=MAT_KEYS.index("AL6061-T6"), key=f"m{i}")
-    layers_in.append((t, m))
-engage_dia = sb.number_input("Engagement [diameters]", 0.5, 4.0, 1.5, 0.1) \
-    if config in (3, 4) else None
+    t = c1.number_input(f"t {tag} [in]", 0.001, 5.0, float(t0), format="%.4f",
+                        key=key(f"t{i}"))
+    m = c2.selectbox(f"mat {tag}", MAT_KEYS, index=_index(MAT_KEYS, m0), key=key(f"m{i}"))
+    layers_in.append([t, m])
+engage_dia = sb.number_input("Engagement [diameters]", 0.5, 4.0, float(base.engagement_dia),
+                             0.1, key=key("engage")) if config in (3, 4) else None
 stiff_method = sb.radio(
     "Member stiffness", ["frustum", "tm106943"],
+    index=_index(["frustum", "tm106943"], base.stiffness_method),
     format_func=lambda m: {"frustum": "Shigley frustum (layer by layer)",
                            "tm106943": "TM-106943 equivalent modulus"}[m],
     help="The frustum method builds the stack cone by cone and is preferred "
-         "for dissimilar materials.")
-cone_angle = sb.slider("Cone half-angle [deg]", 25.0, 33.0, 30.0, 0.5) \
-    if stiff_method == "frustum" else 30.0
+         "for dissimilar materials.", key=key("stiff"))
+cone_angle = sb.slider("Cone half-angle [deg]", 25.0, 33.0, float(base.cone_angle_deg), 0.5,
+                       key=key("cone")) if stiff_method == "frustum" else 30.0
 
 sb.markdown("## Preload")
-method = sb.radio("Basis", ["target force", "applied torque", "fraction of yield"])
-target_P = sb.number_input("Target preload [lbf]", 0.0, 1e5, 81.0) if method == "target force" else None
-applied_T = sb.number_input("Applied torque [lbf-in]", 0.0, 1e5, 2.1) if method == "applied torque" else None
-yield_frac = sb.slider("Fraction of bolt yield", 0.2, 0.9, 0.65, 0.01) if method == "fraction of yield" else None
-install = sb.selectbox("Installation", sorted(NUT_FACTOR), index=sorted(NUT_FACTOR).index("dry"))
+METHOD_LABELS = {"target": "target force", "torque": "applied torque",
+                 "yield_fraction": "fraction of yield"}
+method = sb.radio("Basis", list(METHOD_LABELS),
+                  index=_index(list(METHOD_LABELS), base.preload_method),
+                  format_func=METHOD_LABELS.get, key=key("method"))
+target_P = sb.number_input("Target preload [lbf]", 0.0, 1e5, float(base.target_preload),
+                           key=key("targetP")) if method == "target" else base.target_preload
+applied_T = sb.number_input("Applied torque [lbf-in]", 0.0, 1e5, float(base.applied_torque),
+                            key=key("torque")) if method == "torque" else base.applied_torque
+yield_frac = sb.slider("Fraction of bolt yield", 0.2, 0.9, float(base.yield_fraction), 0.01,
+                       key=key("yfrac")) if method == "yield_fraction" else base.yield_fraction
+install = sb.selectbox("Installation", sorted(NUT_FACTOR),
+                       index=_index(sorted(NUT_FACTOR), base.install), key=key("install"))
 unc_key = sb.selectbox("Preload uncertainty", sorted(UNCERTAINTY),
-                       index=sorted(UNCERTAINTY).index("torque wrench, unlubricated"))
-relax = sb.slider("Short-term relaxation", 0.0, 0.15, 0.05, 0.01)
+                       index=_index(sorted(UNCERTAINTY), base.uncertainty_key),
+                       key=key("unc"))
+relax = sb.slider("Short-term relaxation", 0.0, 0.15, float(base.relaxation), 0.01,
+                  key=key("relax"))
 
 sb.markdown("## Applied loads")
-P_et = sb.number_input("Axial load P_et [lbf]", 0.0, 1e6, 4.0)
-V = sb.number_input("Shear load V [lbf]", 0.0, 1e6, 2.0)
-Mb = sb.number_input("Bending moment [lbf-in]", 0.0, 1e6, 0.0)
-T_asm = sb.number_input("Assembly temperature [C]", -273.0, 500.0, 20.0)
-T_hot = sb.number_input("Hot limit [C]", -273.0, 800.0, 71.0)
-T_cold = sb.number_input("Cold limit [C]", -273.0, 500.0, -25.0)
-sf_t = sb.number_input("SF tension", 1.0, 5.0, 1.4, 0.05)
-sf_s = sb.number_input("SF shear", 1.0, 5.0, 1.4, 0.05)
-sf_sep = sb.number_input("SF separation", 1.0, 3.0, 1.2, 0.05,
-                         help="1.2 structural, 1.4 pressure systems")
+P_et = sb.number_input("Axial load P_et [lbf]", 0.0, 1e6, float(base.P_et), key=key("Pet"))
+V = sb.number_input("Shear load V [lbf]", 0.0, 1e6, float(base.V), key=key("V"))
+Mb = sb.number_input("Bending moment [lbf-in]", 0.0, 1e6, float(base.Mb), key=key("Mb"))
+T_asm = sb.number_input("Assembly temperature [C]", -273.0, 500.0, float(base.T_assembly_C),
+                        key=key("Tasm"))
+T_hot = sb.number_input("Hot limit [C]", -273.0, 800.0, float(base.T_hot_C), key=key("Thot"))
+T_cold = sb.number_input("Cold limit [C]", -273.0, 500.0, float(base.T_cold_C),
+                         key=key("Tcold"))
+sf_t = sb.number_input("SF tension", 1.0, 5.0, float(base.SF_tension), 0.05, key=key("sft"))
+sf_s = sb.number_input("SF shear", 1.0, 5.0, float(base.SF_shear), 0.05, key=key("sfs"))
+sf_sep = sb.number_input("SF separation", 1.0, 3.0, float(base.SF_separation), 0.05,
+                         help="1.2 structural, 1.4 pressure systems", key=key("sfsep"))
 
-use_insert = config in (3, 4)
-if use_insert:
+ins_key, ins_major, le_ins_par = (base.insert_material, base.insert_major_dia,
+                                  base.le_insert_parent)
+if config in (3, 4):
     sb.markdown("## Threaded insert")
-    ins_key = sb.selectbox("Insert material", MAT_KEYS, index=MAT_KEYS.index("CRES304"))
-    ins_major = sb.number_input("Insert external major dia [in]", 0.01, 2.0, 0.1380, format="%.4f")
-    le_ins_par = sb.number_input("Insert-into-parent engagement [in]", 0.01, 2.0, 0.129, format="%.4f")
+    ins_key = sb.selectbox("Insert material", MAT_KEYS,
+                           index=_index(MAT_KEYS, base.insert_material), key=key("insmat"))
+    ins_major = sb.number_input("Insert external major dia [in]", 0.01, 2.0,
+                                float(base.insert_major_dia), format="%.4f",
+                                key=key("insmaj"))
+    le_ins_par = sb.number_input("Insert-into-parent engagement [in]", 0.01, 2.0,
+                                 float(base.le_insert_parent), format="%.4f",
+                                 key=key("insle"))
 
 sb.markdown("## Abutment")
-use_ab = sb.checkbox("Check tear-out and bearing", value=True)
+use_ab = sb.checkbox("Check tear-out and bearing", value=base.use_abutment, key=key("useab"))
+ab_key, sheet_t, edge_d, hole_d, washer_od = (base.abutment_material, base.sheet_thickness,
+                                              base.edge_distance, base.hole_dia,
+                                              base.washer_od)
 if use_ab:
-    ab_key = sb.selectbox("Abutment material", MAT_KEYS, index=MAT_KEYS.index("AL6061-T6"))
-    sheet_t = sb.number_input("Sheet thickness [in]", 0.005, 2.0, 0.060, format="%.4f")
-    edge_d = sb.number_input("Edge distance e [in]", 0.01, 5.0, 0.200, format="%.4f")
-    hole_d = sb.number_input("Through-hole dia [in]", 0.01, 2.0, 0.096, format="%.4f")
-    washer_od = sb.number_input("Washer OD [in], 0 = none", 0.0, 3.0, 0.096, format="%.4f")
+    ab_key = sb.selectbox("Abutment material", MAT_KEYS,
+                          index=_index(MAT_KEYS, base.abutment_material), key=key("abmat"))
+    sheet_t = sb.number_input("Sheet thickness [in]", 0.005, 2.0, float(base.sheet_thickness),
+                              format="%.4f", key=key("sheet"))
+    edge_d = sb.number_input("Edge distance e [in]", 0.01, 5.0, float(base.edge_distance),
+                             format="%.4f", key=key("edge"))
+    hole_d = sb.number_input("Through-hole dia [in]", 0.01, 2.0, float(base.hole_dia),
+                             format="%.4f", key=key("hole"))
+    washer_od = sb.number_input("Washer OD [in], 0 = none", 0.0, 3.0,
+                                float(base.washer_od or 0.0), format="%.4f",
+                                key=key("washer")) or None
 
-n_bolts = sb.number_input("Bolts in assembly (reporting)", 1, 500, 7)
+n_bolts = sb.number_input("Bolts in assembly (reporting)", 1, 500, int(base.number_of_bolts),
+                          key=key("nbolts"))
+
+case = JointCase(
+    name=case_name, thread=thread, head_style=head_style, shank_dia=shank_dia,
+    bolt_material=bolt_key, shear_plane_in_shank=shank_shear,
+    configuration=config, layers=layers_in,
+    engagement_dia=engage_dia if engage_dia is not None else base.engagement_dia,
+    stiffness_method=stiff_method, washer_face_dia=base.washer_face_dia,
+    cone_angle_deg=cone_angle,
+    preload_method=method, target_preload=target_P, applied_torque=applied_T,
+    yield_fraction=yield_frac, install=install, uncertainty_key=unc_key,
+    relaxation=relax,
+    P_et=P_et, V=V, Mb=Mb, T_assembly_C=T_asm, T_hot_C=T_hot, T_cold_C=T_cold,
+    SF_tension=sf_t, SF_shear=sf_s, SF_separation=sf_sep,
+    insert_material=ins_key, insert_major_dia=ins_major, le_insert_parent=le_ins_par,
+    use_abutment=use_ab, abutment_material=ab_key, sheet_thickness=sheet_t,
+    edge_distance=edge_d, hole_dia=hole_d, washer_od=washer_od,
+    number_of_bolts=int(n_bolts),
+)
+sb.download_button("Save case (.json)", case.to_json(),
+                   file_name=f"{(case_name or 'case').replace(' ', '_')}.json",
+                   mime="application/json")
 
 # ---------------------------------------------------------------------------
-# Model
+# Model -- built by the package, exactly as the notebook builds it
 # ---------------------------------------------------------------------------
 try:
-    fastener = Fastener(thread, head_style=head_style, shank_dia=shank_dia)
-    bolt_mat = materials.get(bolt_key)
-    layers = [Layer(t, materials.get(m)) for t, m in layers_in]
-    Li = engage_dia * fastener.d_major if config in (3, 4) else None
-    joint = Joint(fastener, layers, bolt_mat, configuration=config,
-                  insert_length=Li, stiffness_method=stiff_method,
-                  cone_angle_deg=cone_angle)
-    environment = ThermalEnvironment(T_assembly=T_asm, T_hot=T_hot, T_cold=T_cold)
-
-    K, u = NUT_FACTOR[install], UNCERTAINTY[unc_key]
-    if method == "target force":
-        preload = preload_target(target_P, fastener, K=K, u=u, relax=relax)
-    elif method == "applied torque":
-        preload = preload_from_torque(applied_T, K, fastener.d_major, u=u, relax=relax)
-    else:
-        preload = preload_from_yield_fraction(fastener, bolt_mat, yield_frac,
-                                              K=K, u=u, relax=relax)
-
-    load_case = LoadCase("case 1", P_et=P_et, V=V, Mb=Mb,
-                         delta_T=environment.cases["hot"],
-                         SF_tension=sf_t, SF_shear=sf_s, SF_separation=sf_sep)
-    insert = InsertSpec(materials.get(ins_key), layers[-1].material,
-                        ins_major, Li, le_ins_par) if use_insert else None
-    abutment = AbutmentSpec(materials.get(ab_key), sheet_t, edge_d, hole_d,
-                            washer_od or None) if use_ab else None
-
-    envelope = run_thermal_envelope(fastener, bolt_mat, joint, preload,
-                                    load_case, environment, insert=insert,
-                                    abutment=abutment,
-                                    shear_plane_in_shank=shank_shear)
-    analysis = envelope.cases["hot"]
+    model = case.build()
+    envelope = model.envelope()
 except (ValueError, KeyError) as exc:
     st.markdown(f'<div class="bj-err"><b>Cannot build the joint.</b><br>{exc}</div>',
                 unsafe_allow_html=True)
     st.stop()
+
+fastener, bolt_mat, joint = model.fastener, model.bolt_mat, model.joint
+preload, environment, load_case = model.preload, model.environment, model.load_case
+analysis = envelope.cases["hot"]
 
 crit = envelope.critical
 ok = envelope.passes
@@ -323,17 +392,8 @@ with left:
         f'<div class="bj-stamp-note">governing &mdash; {crit.mode} '
         f'({crit.basis}) in the {crit_case} case</div>',
         unsafe_allow_html=True)
-    Le_min = min_engagement_equal_strength(fastener)
-    if Li and Li < Le_min:
-        st.markdown(f'<div class="bj-warn">Engagement {Li:.4f} in is below the '
-                    f'equal-strength minimum {Le_min:.4f} in.</div>', unsafe_allow_html=True)
-    if use_ab and edge_d / fastener.d_major < 1.5:
-        st.markdown(f'<div class="bj-warn">e/D = {edge_d / fastener.d_major:.2f} '
-                    f'&mdash; below 1.5. Use Bruhn / TM X-73305.</div>', unsafe_allow_html=True)
-    if abs(crit.MS) < 0.5:
-        st.markdown('<div class="bj-warn">Governing margin below 0.5. Check the '
-                    'interaction curve directly; the approximation can be '
-                    'unconservative.</div>', unsafe_allow_html=True)
+    for w in model.warnings(envelope):
+        st.markdown(f'<div class="bj-warn">{w}</div>', unsafe_allow_html=True)
 
 with right:
     cards = [
@@ -372,15 +432,8 @@ TICKS = [(0.5, "0.5"), (1.0, "1"), (3.0, "3"), (10.0, "10")]
 tick_html = "".join(
     f'<div class="bj-tick" style="left:{NEG + _pos(v):.2f}%"></div>' for v, _ in TICKS)
 
-_worst = {}
-for _case, _a in envelope.cases.items():
-    for _r in _a.results:
-        _k = (_r.mode, _r.basis)
-        if _k not in _worst or _r.MS < _worst[_k][0].MS:
-            _worst[_k] = (_r, _case)
-
 rungs = []
-for r, r_case in sorted(_worst.values(), key=lambda x: x[0].MS):
+for r, r_case in envelope.worst():
     ms = r.MS
     colour = FAIL if ms < 0 else (CAUTION if ms < 0.5 else PASS)
     gov = (" bj-gov" if (r.mode, r.basis) == (crit.mode, crit.basis)
@@ -509,35 +562,14 @@ with tab_sens:
                 'more preload protects against separation and costs bolt '
                 'tension margin.</div>', unsafe_allow_html=True)
 
-    def rerun(preload_obj, lc):
-        return JointAnalysis(fastener, bolt_mat, joint, preload_obj, lc,
-                             insert=insert, abutment=abutment,
-                             shear_plane_in_shank=shank_shear)
-
-    def sweep_load(attr, values):
-        out = []
-        for v in values:
-            lc = LoadCase(**{**load_case.__dict__, attr: float(v)})
-            out.append({attr: v, "MS": rerun(preload, lc).critical.MS})
-        return pd.DataFrame(out)
-
-    ax_sweep = sweep_load("P_et", np.linspace(0, max(4 * P_et, 40), 30))
-    sh_sweep = sweep_load("V", np.linspace(0, max(4 * V, 40), 30))
-    pl_rows = []
-    for Po in np.linspace(0.2 * preload.Po, 2.0 * preload.Po, 30):
-        p = Preload(Po=Po, u=preload.u, relax=preload.relax,
-                    K=preload.K, d_major=preload.d_major)
-        a = rerun(p, load_case)
-        by = {(r.mode, r.basis): r.MS for r in a.results}
-        pl_rows.append({"Po": Po, "critical": a.critical.MS,
-                        "bolt tension (yield)": by[("bolt tension", "yield")],
-                        "separation": by[("joint separation", "n/a")]})
-    pl = pd.DataFrame(pl_rows)
+    ax_sweep = model.sweep_load("P_et", np.linspace(0, max(4 * P_et, 40), 30))
+    sh_sweep = model.sweep_load("V", np.linspace(0, max(4 * V, 40), 30))
+    pl = model.sweep_preload(np.linspace(0.2 * preload.Po, 2.0 * preload.Po, 30))
 
     fig2, axes = plt.subplots(1, 3, figsize=(13.5, 3.6), dpi=140)
     for ax_, d, xc, lbl in ((axes[0], ax_sweep, "P_et", "external axial load [lbf]"),
                             (axes[1], sh_sweep, "V", "external shear load [lbf]")):
-        ax_.plot(d[xc], d["MS"], color=BLUE, lw=2)
+        ax_.plot(d[xc], d["critical MS"], color=BLUE, lw=2)
         ax_.axhline(0, color=FAIL, ls="--", lw=1.2)
         ax_.axvline(P_et if xc == "P_et" else V, color=INK, ls=":", lw=1)
         ax_.set_xlabel(lbl); ax_.set_ylabel("governing MS")
@@ -557,7 +589,7 @@ with tab_sens:
     fig2.patch.set_facecolor(CARD); plt.tight_layout()
     st.pyplot(fig2)
 
-    good = ax_sweep[ax_sweep["MS"] >= 0]["P_et"]
+    good = ax_sweep[ax_sweep["critical MS"] >= 0]["P_et"]
     if len(good) < len(ax_sweep):
         st.markdown(f'<div class="bj-note">Largest swept axial load holding a '
                     f'positive margin: <b>{good.max():,.1f} lbf</b>.</div>',
